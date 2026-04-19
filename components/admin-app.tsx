@@ -1,7 +1,15 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { useRouter } from "next/navigation";
 import type { StoredImage } from "@/lib/blob";
 
@@ -44,6 +52,9 @@ export function AdminApp({
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [deletingPathname, setDeletingPathname] = useState<string | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const galleryCountLabel = useMemo(() => {
     if (images.length === 1) {
@@ -161,6 +172,7 @@ export function AdminApp({
 
       setLastUpload(payload);
       setImages((current) => [payload, ...current]);
+      setSelectedFileName(null);
       form.reset();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload failed.";
@@ -168,6 +180,44 @@ export function AdminApp({
     } finally {
       setUploading(false);
     }
+  }
+
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const nextFile = event.target.files?.[0];
+    setSelectedFileName(nextFile?.name ?? null);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setIsDraggingFile(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLLabelElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDraggingFile(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setIsDraggingFile(false);
+
+    const droppedFile = event.dataTransfer.files?.[0];
+
+    if (!droppedFile) {
+      return;
+    }
+
+    const input = fileInputRef.current;
+
+    if (input) {
+      const transfer = new DataTransfer();
+      transfer.items.add(droppedFile);
+      input.files = transfer.files;
+    }
+
+    setSelectedFileName(droppedFile.name);
+    setPanelError(null);
   }
 
   async function handleDelete(image: StoredImage) {
@@ -264,15 +314,27 @@ export function AdminApp({
         </div>
 
         <form className="upload-form" onSubmit={handleUpload}>
-          <label className="dropzone" htmlFor="image">
+          <label
+            className={`dropzone${isDraggingFile ? " is-dragging" : ""}`}
+            htmlFor="image"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <span>Select image</span>
             <input
               id="image"
               name="image"
               type="file"
               accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+              ref={fileInputRef}
+              onChange={handleFileChange}
             />
-            <small>PNG, JPG, WEBP, GIF, AVIF up to 10 MB</small>
+            <small>
+              {selectedFileName
+                ? `Selected: ${selectedFileName}`
+                : "PNG, JPG, WEBP, GIF, AVIF up to 10 MB or drag it here"}
+            </small>
           </label>
 
           <button className="primary-button" type="submit" disabled={uploading}>

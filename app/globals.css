@@ -140,6 +140,11 @@ code {
   border: 1.5px dashed rgba(117, 98, 79, 0.38);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.56);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .dropzone span {
@@ -147,9 +152,17 @@ code {
   font-weight: 700;
 }
 
+.dropzone.is-dragging {
+  border-color: var(--accent);
+  background: rgba(217, 93, 57, 0.08);
+  box-shadow: 0 0 0 4px rgba(217, 93, 57, 0.12);
+  transform: translateY(-1px);
+}
+
 .dropzone small {
   color: var(--muted);
   font-size: 0.84rem;
+  word-break: break-word;
 }
 
 .dropzone input {
