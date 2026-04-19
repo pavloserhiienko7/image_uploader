@@ -1,6 +1,10 @@
 import { del, list, put } from "@vercel/blob";
 
-const METADATA_PATH = "system/image-library-metadata.json";
+const METADATA_PREFIX = "system/image-library-metadata/";
+
+function getMetadataPath() {
+  return `${METADATA_PREFIX}${Date.now()}.json`;
+}
 
 export type ImageMetadata = {
   hideDelete: boolean;
@@ -35,12 +39,11 @@ function normalizeMetadata(value: unknown): ImageMetadata {
 
 export async function readImageMetadataIndex() {
   const { blobs } = await list({
-    prefix: METADATA_PATH,
-    limit: 100
+    prefix: METADATA_PREFIX,
+    limit: 1000
   });
 
   const metadataBlob = blobs
-    .filter((blob) => blob.pathname === METADATA_PATH)
     .sort((left, right) => right.uploadedAt.getTime() - left.uploadedAt.getTime())[0];
 
   if (!metadataBlob) {
@@ -75,23 +78,25 @@ export async function readImageMetadataIndex() {
 
 export async function writeImageMetadataIndex(index: ImageMetadataIndex) {
   const { blobs } = await list({
-    prefix: METADATA_PATH,
-    limit: 100
+    prefix: METADATA_PREFIX,
+    limit: 1000
   });
 
-  const existingMetadataUrls = blobs
-    .filter((blob) => blob.pathname === METADATA_PATH)
-    .map((blob) => blob.url);
-
-  if (existingMetadataUrls.length > 0) {
-    await del(existingMetadataUrls);
-  }
-
-  await put(METADATA_PATH, JSON.stringify(index, null, 2), {
+  const nextMetadataPath = getMetadataPath();
+  const nextBlob = await put(nextMetadataPath, JSON.stringify(index, null, 2), {
     access: "public",
     addRandomSuffix: false,
-    contentType: "application/json"
+    contentType: "application/json",
+    cacheControlMaxAge: 1
   });
+
+  const staleMetadataUrls = blobs
+    .filter((blob) => blob.pathname !== nextBlob.pathname)
+    .map((blob) => blob.url);
+
+  if (staleMetadataUrls.length > 0) {
+    await del(staleMetadataUrls);
+  }
 }
 
 export function getImageMetadata(
