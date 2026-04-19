@@ -19,23 +19,47 @@ type AdminAppProps = {
 };
 
 type LastUploadState = StoredImage | null;
-type CommentDrafts = Record<string, string>;
-type SavingState = Record<string, { hideDelete?: boolean; usageComment?: boolean }>;
-type MetadataErrors = Record<string, string | undefined>;
 type SaveQueue = Record<string, Promise<unknown>>;
+type EditableImage = Omit<StoredImage, "usageComment" | "hideDelete"> & {
+  hideDelete: boolean;
+  persistedHideDelete: boolean;
+  persistedUsageComment: string;
+  draftUsageComment: string;
+  pendingHideDelete: boolean;
+  pendingUsageComment: boolean;
+  error?: string;
+};
 
-function getGalleryCountLabel(images: StoredImage[]) {
-  if (images.length === 1) {
+function getGalleryCountLabel(imageCount: number) {
+  if (imageCount === 1) {
     return "1 stored image";
   }
 
-  return `${images.length} stored images`;
+  return `${imageCount} stored images`;
 }
 
-function buildCommentDrafts(images: StoredImage[]) {
-  return Object.fromEntries(
-    images.map((image) => [image.pathname, image.usageComment])
-  ) satisfies CommentDrafts;
+function toStoredImage(image: EditableImage): StoredImage {
+  return {
+    url: image.url,
+    downloadUrl: image.downloadUrl,
+    pathname: image.pathname,
+    size: image.size,
+    uploadedAt: image.uploadedAt,
+    hideDelete: image.hideDelete,
+    usageComment: image.persistedUsageComment
+  };
+}
+
+function createEditableImage(image: StoredImage): EditableImage {
+  return {
+    ...image,
+    persistedHideDelete: image.hideDelete,
+    persistedUsageComment: image.usageComment,
+    draftUsageComment: image.usageComment,
+    pendingHideDelete: false,
+    pendingUsageComment: false,
+    error: undefined
+  };
 }
 
 function formatFileSize(size: number) {
@@ -61,7 +85,9 @@ export function AdminApp({
   isConfigured
 }: AdminAppProps) {
   const router = useRouter();
-  const [images, setImages] = useState(initialImages);
+  const [images, setImages] = useState<EditableImage[]>(
+    initialImages.map(createEditableImage)
+  );
   const [lastUpload, setLastUpload] = useState<LastUploadState>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
@@ -71,38 +97,37 @@ export function AdminApp({
   const [deletingPathname, setDeletingPathname] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  const [commentDrafts, setCommentDrafts] = useState<CommentDrafts>(
-    buildCommentDrafts(initialImages)
-  );
-  const [savingState, setSavingState] = useState<SavingState>({});
-  const [metadataErrors, setMetadataErrors] = useState<MetadataErrors>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const saveQueueRef = useRef<SaveQueue>({});
+  const imagesRef = useRef(images);
 
-  const galleryCountLabel = getGalleryCountLabel(images);
+  const galleryCountLabel = getGalleryCountLabel(images.length);
 
-  function syncImages(nextImages: StoredImage[]) {
+  function setEditableImages(
+    updater: EditableImage[] | ((current: EditableImage[]) => EditableImage[])
+  ) {
+    const nextImages =
+      typeof updater === "function"
+        ? (updater as (current: EditableImage[]) => EditableImage[])(imagesRef.current)
+        : updater;
+
+    imagesRef.current = nextImages;
     setImages(nextImages);
-    setCommentDrafts(buildCommentDrafts(nextImages));
   }
 
   function updateImageInState(
     pathname: string,
-    patch: Partial<StoredImage>,
-    options?: { syncDraft?: boolean }
+    updater: (image: EditableImage) => EditableImage
   ) {
-    setImages((current) =>
+    setEditableImages((current) =>
       current.map((image) =>
-        image.pathname === pathname ? { ...image, ...patch } : image
+        image.pathname === pathname ? updater(image) : image
       )
     );
+  }
 
-    if (options?.syncDraft && typeof patch.usageComment === "string") {
-      setCommentDrafts((current) => ({
-        ...current,
-        [pathname]: patch.usageComment as string
-      }));
-    }
+  function getImageByPathname(pathname: string) {
+    return imagesRef.current.find((image) => image.pathname === pathname);
   }
 
   useEffect(() => {
@@ -127,7 +152,7 @@ export function AdminApp({
           throw new Error(errorMessage ?? "Failed to load images.");
         }
 
-        syncImages(payload);
+        setEditableImages(payload.map(createEditableImage));
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to load images.";
@@ -212,11 +237,7 @@ export function AdminApp({
       }
 
       setLastUpload(payload);
-      setImages((current) => [payload, ...current]);
-      setCommentDrafts((current) => ({
-        [payload.pathname]: payload.usageComment,
-        ...current
-      }));
+      setEditableImages((current) => [createEditableImage(payload), ...current]);
       setSelectedFileName(null);
       form.reset();
     } catch (error) {
@@ -283,22 +304,10 @@ export function AdminApp({
         throw new Error(payload.error ?? "Delete failed.");
       }
 
-      setImages((current) => current.filter((item) => item.pathname !== image.pathname));
-      setCommentDrafts((current) => {
-        const nextState = { ...current };
-        delete nextState[image.pathname];
-        return nextState;
-      });
-      setSavingState((current) => {
-        const nextState = { ...current };
-        delete nextState[image.pathname];
-        return nextState;
-      });
-      setMetadataErrors((current) => {
-        const nextState = { ...current };
-        delete nextState[image.pathname];
-        return nextState;
-      });
+      setEditableImages((current) =>
+        current.filter((item) => item.pathname !== image.pathname)
+      );
+      delete saveQueueRef.current[image.pathname];
       setLastUpload((current) =>
         current?.pathname === image.pathname ? null : current
       );
@@ -319,21 +328,13 @@ export function AdminApp({
     patch: { hideDelete?: boolean; usageComment?: string }
   ) {
     const queuedSave = async () => {
-      const nextSavingState = {
-        hideDelete: typeof patch.hideDelete === "boolean" ? true : undefined,
-        usageComment: typeof patch.usageComment === "string" ? true : undefined
-      };
-
-      setMetadataErrors((current) => ({
-        ...current,
-        [pathname]: undefined
-      }));
-      setSavingState((current) => ({
-        ...current,
-        [pathname]: {
-          ...current[pathname],
-          ...nextSavingState
-        }
+      updateImageInState(pathname, (image) => ({
+        ...image,
+        error: undefined,
+        pendingHideDelete:
+          typeof patch.hideDelete === "boolean" ? true : image.pendingHideDelete,
+        pendingUsageComment:
+          typeof patch.usageComment === "string" ? true : image.pendingUsageComment
       }));
 
       try {
@@ -362,33 +363,66 @@ export function AdminApp({
           throw new Error(errorMessage ?? "Failed to save image details.");
         }
 
-        updateImageInState(payload.image.pathname, payload.image, {
-          syncDraft: true
+        const updatedImage = payload.image;
+
+        updateImageInState(pathname, (image) => {
+          const nextImage = {
+            ...image,
+            error: undefined,
+            pendingHideDelete:
+              typeof patch.hideDelete === "boolean" ? false : image.pendingHideDelete,
+            pendingUsageComment:
+              typeof patch.usageComment === "string"
+                ? false
+                : image.pendingUsageComment
+          };
+
+          if (typeof patch.hideDelete === "boolean") {
+            nextImage.persistedHideDelete = updatedImage.hideDelete;
+
+            if (image.hideDelete === patch.hideDelete) {
+              nextImage.hideDelete = updatedImage.hideDelete;
+            }
+          }
+
+          if (typeof patch.usageComment === "string") {
+            nextImage.persistedUsageComment = updatedImage.usageComment;
+
+            if (image.draftUsageComment === patch.usageComment) {
+              nextImage.draftUsageComment = updatedImage.usageComment;
+            }
+          }
+
+          return nextImage;
         });
-        return payload.image;
+
+        return updatedImage;
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to save image details.";
-        setMetadataErrors((current) => ({
-          ...current,
-          [pathname]: message
-        }));
-        throw error;
-      } finally {
-        setSavingState((current) => ({
-          ...current,
-          [pathname]: {
-            ...current[pathname],
-            hideDelete:
-              typeof patch.hideDelete === "boolean"
-                ? false
-                : current[pathname]?.hideDelete,
-            usageComment:
+        updateImageInState(pathname, (image) => {
+          const nextImage = {
+            ...image,
+            error: message,
+            pendingHideDelete:
+              typeof patch.hideDelete === "boolean" ? false : image.pendingHideDelete,
+            pendingUsageComment:
               typeof patch.usageComment === "string"
                 ? false
-                : current[pathname]?.usageComment
+                : image.pendingUsageComment
+          };
+
+          if (
+            typeof patch.hideDelete === "boolean" &&
+            image.hideDelete === patch.hideDelete
+          ) {
+            nextImage.hideDelete = image.persistedHideDelete;
           }
-        }));
+
+          return nextImage;
+        });
+
+        throw error;
       }
     };
 
@@ -406,70 +440,51 @@ export function AdminApp({
   }
 
   async function handleHideDeleteToggle(pathname: string, checked: boolean) {
-    const currentImage = images.find((image) => image.pathname === pathname);
+    const currentImage = getImageByPathname(pathname);
 
     if (!currentImage) {
       return;
     }
 
-    const previousValue = currentImage.hideDelete;
-
-    updateImageInState(pathname, {
-      hideDelete: checked
-    });
+    updateImageInState(pathname, (image) => ({
+      ...image,
+      hideDelete: checked,
+      error: undefined
+    }));
 
     try {
       await saveImageMetadata(pathname, {
         hideDelete: checked
       });
-    } catch {
-      updateImageInState(pathname, {
-        hideDelete: previousValue
-      });
-    }
+    } catch {}
   }
 
   function handleUsageCommentChange(pathname: string, value: string) {
-    setCommentDrafts((current) => ({
-      ...current,
-      [pathname]: value
-    }));
-    setMetadataErrors((current) => ({
-      ...current,
-      [pathname]: undefined
+    updateImageInState(pathname, (image) => ({
+      ...image,
+      draftUsageComment: value,
+      error: undefined
     }));
   }
 
-  async function handleUsageCommentBlur(pathname: string, value: string) {
-    const currentImage = images.find((image) => image.pathname === pathname);
+  async function handleUsageCommentBlur(pathname: string) {
+    const currentImage = getImageByPathname(pathname);
 
     if (!currentImage) {
       return;
     }
 
-    const nextComment = value;
+    const nextComment = currentImage.draftUsageComment;
 
-    if (nextComment === currentImage.usageComment) {
+    if (nextComment === currentImage.persistedUsageComment) {
       return;
     }
-
-    updateImageInState(pathname, {
-      usageComment: nextComment
-    });
 
     try {
       await saveImageMetadata(pathname, {
         usageComment: nextComment
       });
-    } catch {
-      updateImageInState(
-        pathname,
-        {
-          usageComment: currentImage.usageComment
-        },
-        { syncDraft: true }
-      );
-    }
+    } catch {}
   }
 
   if (!isConfigured) {
@@ -633,7 +648,6 @@ export function AdminApp({
                     <input
                       type="checkbox"
                       checked={image.hideDelete}
-                      disabled={Boolean(savingState[image.pathname]?.hideDelete)}
                       onChange={(event) =>
                         handleHideDeleteToggle(image.pathname, event.target.checked)
                       }
@@ -644,25 +658,16 @@ export function AdminApp({
                     <span>Project comment</span>
                     <input
                       type="text"
-                      value={commentDrafts[image.pathname] ?? ""}
-                      disabled={Boolean(savingState[image.pathname]?.usageComment)}
+                      value={image.draftUsageComment}
                       placeholder="Example: Used in client landing page redesign"
                       onChange={(event) =>
                         handleUsageCommentChange(image.pathname, event.target.value)
                       }
-                      onBlur={(event) =>
-                        handleUsageCommentBlur(image.pathname, event.target.value)
-                      }
+                      onBlur={() => handleUsageCommentBlur(image.pathname)}
                     />
                   </label>
-                  {savingState[image.pathname]?.hideDelete ||
-                  savingState[image.pathname]?.usageComment ? (
-                    <p className="meta status-note">Saving changes...</p>
-                  ) : null}
-                  {metadataErrors[image.pathname] ? (
-                    <p className="message error inline-message">
-                      {metadataErrors[image.pathname]}
-                    </p>
+                  {image.error ? (
+                    <p className="message error inline-message">{image.error}</p>
                   ) : null}
                   <div className="gallery-actions">
                     <button
@@ -677,7 +682,7 @@ export function AdminApp({
                         className="danger-button"
                         type="button"
                         disabled={deletingPathname === image.pathname}
-                        onClick={() => handleDelete(image)}
+                        onClick={() => handleDelete(toStoredImage(image))}
                       >
                         {deletingPathname === image.pathname
                           ? "Deleting..."
