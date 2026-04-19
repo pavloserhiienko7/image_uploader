@@ -372,10 +372,8 @@ code {
   letter-spacing: 0.08em;
 }
 
-.comment-field textarea {
+.comment-field input {
   width: 100%;
-  resize: vertical;
-  min-height: 5.5rem;
   padding: 0.75rem 0.9rem;
   border: 1px solid rgba(117, 98, 79, 0.25);
   border-radius: 14px;

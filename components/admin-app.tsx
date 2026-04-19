@@ -22,6 +22,7 @@ type LastUploadState = StoredImage | null;
 type CommentDrafts = Record<string, string>;
 type SavingState = Record<string, { hideDelete?: boolean; usageComment?: boolean }>;
 type MetadataErrors = Record<string, string | undefined>;
+type SaveQueue = Record<string, Promise<unknown>>;
 
 function getGalleryCountLabel(images: StoredImage[]) {
   if (images.length === 1) {
@@ -76,6 +77,7 @@ export function AdminApp({
   const [savingState, setSavingState] = useState<SavingState>({});
   const [metadataErrors, setMetadataErrors] = useState<MetadataErrors>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const saveQueueRef = useRef<SaveQueue>({});
 
   const galleryCountLabel = getGalleryCountLabel(images);
 
@@ -84,16 +86,23 @@ export function AdminApp({
     setCommentDrafts(buildCommentDrafts(nextImages));
   }
 
-  function updateImageInState(nextImage: StoredImage) {
+  function updateImageInState(
+    pathname: string,
+    patch: Partial<StoredImage>,
+    options?: { syncDraft?: boolean }
+  ) {
     setImages((current) =>
       current.map((image) =>
-        image.pathname === nextImage.pathname ? nextImage : image
+        image.pathname === pathname ? { ...image, ...patch } : image
       )
     );
-    setCommentDrafts((current) => ({
-      ...current,
-      [nextImage.pathname]: nextImage.usageComment
-    }));
+
+    if (options?.syncDraft && typeof patch.usageComment === "string") {
+      setCommentDrafts((current) => ({
+        ...current,
+        [pathname]: patch.usageComment as string
+      }));
+    }
   }
 
   useEffect(() => {
@@ -309,92 +318,112 @@ export function AdminApp({
     pathname: string,
     patch: { hideDelete?: boolean; usageComment?: string }
   ) {
-    const nextSavingState = {
-      hideDelete: typeof patch.hideDelete === "boolean" ? true : undefined,
-      usageComment: typeof patch.usageComment === "string" ? true : undefined
-    };
+    const queuedSave = async () => {
+      const nextSavingState = {
+        hideDelete: typeof patch.hideDelete === "boolean" ? true : undefined,
+        usageComment: typeof patch.usageComment === "string" ? true : undefined
+      };
 
-    setMetadataErrors((current) => ({
-      ...current,
-      [pathname]: undefined
-    }));
-    setSavingState((current) => ({
-      ...current,
-      [pathname]: {
-        ...current[pathname],
-        ...nextSavingState
-      }
-    }));
-
-    try {
-      const response = await fetch("/api/images", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          pathname,
-          ...patch
-        })
-      });
-
-      const payload = (await response.json()) as
-        | { success?: boolean; image?: StoredImage; error?: string }
-        | { error?: string };
-
-      if (
-        !response.ok ||
-        !("image" in payload) ||
-        !payload.image ||
-        !payload.success
-      ) {
-        const errorMessage = "error" in payload ? payload.error : undefined;
-        throw new Error(errorMessage ?? "Failed to save image details.");
-      }
-
-      updateImageInState(payload.image);
-      return payload.image;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to save image details.";
       setMetadataErrors((current) => ({
         ...current,
-        [pathname]: message
+        [pathname]: undefined
       }));
-      throw error;
-    } finally {
       setSavingState((current) => ({
         ...current,
         [pathname]: {
           ...current[pathname],
-          hideDelete:
-            typeof patch.hideDelete === "boolean"
-              ? false
-              : current[pathname]?.hideDelete,
-          usageComment:
-            typeof patch.usageComment === "string"
-              ? false
-              : current[pathname]?.usageComment
+          ...nextSavingState
         }
       }));
+
+      try {
+        const response = await fetch("/api/images", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            pathname,
+            ...patch
+          })
+        });
+
+        const payload = (await response.json()) as
+          | { success?: boolean; image?: StoredImage; error?: string }
+          | { error?: string };
+
+        if (
+          !response.ok ||
+          !("image" in payload) ||
+          !payload.image ||
+          !payload.success
+        ) {
+          const errorMessage = "error" in payload ? payload.error : undefined;
+          throw new Error(errorMessage ?? "Failed to save image details.");
+        }
+
+        updateImageInState(payload.image.pathname, payload.image, {
+          syncDraft: true
+        });
+        return payload.image;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to save image details.";
+        setMetadataErrors((current) => ({
+          ...current,
+          [pathname]: message
+        }));
+        throw error;
+      } finally {
+        setSavingState((current) => ({
+          ...current,
+          [pathname]: {
+            ...current[pathname],
+            hideDelete:
+              typeof patch.hideDelete === "boolean"
+                ? false
+                : current[pathname]?.hideDelete,
+            usageComment:
+              typeof patch.usageComment === "string"
+                ? false
+                : current[pathname]?.usageComment
+          }
+        }));
+      }
+    };
+
+    const previousSave = saveQueueRef.current[pathname] ?? Promise.resolve();
+    const nextSave = previousSave.catch(() => undefined).then(queuedSave);
+    saveQueueRef.current[pathname] = nextSave;
+
+    try {
+      return await nextSave;
+    } finally {
+      if (saveQueueRef.current[pathname] === nextSave) {
+        delete saveQueueRef.current[pathname];
+      }
     }
   }
 
-  async function handleHideDeleteToggle(image: StoredImage, checked: boolean) {
-    const previousValue = image.hideDelete;
+  async function handleHideDeleteToggle(pathname: string, checked: boolean) {
+    const currentImage = images.find((image) => image.pathname === pathname);
 
-    updateImageInState({
-      ...image,
+    if (!currentImage) {
+      return;
+    }
+
+    const previousValue = currentImage.hideDelete;
+
+    updateImageInState(pathname, {
       hideDelete: checked
     });
 
     try {
-      await saveImageMetadata(image.pathname, {
+      await saveImageMetadata(pathname, {
         hideDelete: checked
       });
     } catch {
-      updateImageInState({
-        ...image,
+      updateImageInState(pathname, {
         hideDelete: previousValue
       });
     }
@@ -411,38 +440,34 @@ export function AdminApp({
     }));
   }
 
-  async function handleUsageCommentBlur(image: StoredImage) {
-    const nextComment = commentDrafts[image.pathname] ?? "";
+  async function handleUsageCommentBlur(pathname: string, value: string) {
+    const currentImage = images.find((image) => image.pathname === pathname);
 
-    if (nextComment === image.usageComment) {
+    if (!currentImage) {
       return;
     }
 
-    setImages((current) =>
-      current.map((item) =>
-        item.pathname === image.pathname
-          ? {
-              ...item,
-              usageComment: nextComment
-            }
-          : item
-      )
-    );
+    const nextComment = value;
+
+    if (nextComment === currentImage.usageComment) {
+      return;
+    }
+
+    updateImageInState(pathname, {
+      usageComment: nextComment
+    });
 
     try {
-      await saveImageMetadata(image.pathname, {
+      await saveImageMetadata(pathname, {
         usageComment: nextComment
       });
     } catch {
-      setImages((current) =>
-        current.map((item) =>
-          item.pathname === image.pathname
-            ? {
-                ...item,
-                usageComment: image.usageComment
-              }
-            : item
-        )
+      updateImageInState(
+        pathname,
+        {
+          usageComment: currentImage.usageComment
+        },
+        { syncDraft: true }
       );
     }
   }
@@ -610,22 +635,24 @@ export function AdminApp({
                       checked={image.hideDelete}
                       disabled={Boolean(savingState[image.pathname]?.hideDelete)}
                       onChange={(event) =>
-                        handleHideDeleteToggle(image, event.target.checked)
+                        handleHideDeleteToggle(image.pathname, event.target.checked)
                       }
                     />
                     <span>Hide delete button</span>
                   </label>
                   <label className="comment-field">
                     <span>Project comment</span>
-                    <textarea
-                      rows={3}
+                    <input
+                      type="text"
                       value={commentDrafts[image.pathname] ?? ""}
                       disabled={Boolean(savingState[image.pathname]?.usageComment)}
                       placeholder="Example: Used in client landing page redesign"
                       onChange={(event) =>
                         handleUsageCommentChange(image.pathname, event.target.value)
                       }
-                      onBlur={() => handleUsageCommentBlur(image)}
+                      onBlur={(event) =>
+                        handleUsageCommentBlur(image.pathname, event.target.value)
+                      }
                     />
                   </label>
                   {savingState[image.pathname]?.hideDelete ||
