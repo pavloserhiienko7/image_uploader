@@ -6,7 +6,6 @@ import {
   DragEvent,
   FormEvent,
   useEffect,
-  useMemo,
   useRef,
   useState
 } from "react";
@@ -20,6 +19,23 @@ type AdminAppProps = {
 };
 
 type LastUploadState = StoredImage | null;
+type CommentDrafts = Record<string, string>;
+type SavingState = Record<string, { hideDelete?: boolean; usageComment?: boolean }>;
+type MetadataErrors = Record<string, string | undefined>;
+
+function getGalleryCountLabel(images: StoredImage[]) {
+  if (images.length === 1) {
+    return "1 stored image";
+  }
+
+  return `${images.length} stored images`;
+}
+
+function buildCommentDrafts(images: StoredImage[]) {
+  return Object.fromEntries(
+    images.map((image) => [image.pathname, image.usageComment])
+  ) satisfies CommentDrafts;
+}
 
 function formatFileSize(size: number) {
   const kilobytes = size / 1024;
@@ -54,15 +70,31 @@ export function AdminApp({
   const [deletingPathname, setDeletingPathname] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [commentDrafts, setCommentDrafts] = useState<CommentDrafts>(
+    buildCommentDrafts(initialImages)
+  );
+  const [savingState, setSavingState] = useState<SavingState>({});
+  const [metadataErrors, setMetadataErrors] = useState<MetadataErrors>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const galleryCountLabel = useMemo(() => {
-    if (images.length === 1) {
-      return "1 stored image";
-    }
+  const galleryCountLabel = getGalleryCountLabel(images);
 
-    return `${images.length} stored images`;
-  }, [images.length]);
+  function syncImages(nextImages: StoredImage[]) {
+    setImages(nextImages);
+    setCommentDrafts(buildCommentDrafts(nextImages));
+  }
+
+  function updateImageInState(nextImage: StoredImage) {
+    setImages((current) =>
+      current.map((image) =>
+        image.pathname === nextImage.pathname ? nextImage : image
+      )
+    );
+    setCommentDrafts((current) => ({
+      ...current,
+      [nextImage.pathname]: nextImage.usageComment
+    }));
+  }
 
   useEffect(() => {
     async function loadImages() {
@@ -86,7 +118,7 @@ export function AdminApp({
           throw new Error(errorMessage ?? "Failed to load images.");
         }
 
-        setImages(payload);
+        syncImages(payload);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to load images.";
@@ -172,6 +204,10 @@ export function AdminApp({
 
       setLastUpload(payload);
       setImages((current) => [payload, ...current]);
+      setCommentDrafts((current) => ({
+        [payload.pathname]: payload.usageComment,
+        ...current
+      }));
       setSelectedFileName(null);
       form.reset();
     } catch (error) {
@@ -239,6 +275,21 @@ export function AdminApp({
       }
 
       setImages((current) => current.filter((item) => item.pathname !== image.pathname));
+      setCommentDrafts((current) => {
+        const nextState = { ...current };
+        delete nextState[image.pathname];
+        return nextState;
+      });
+      setSavingState((current) => {
+        const nextState = { ...current };
+        delete nextState[image.pathname];
+        return nextState;
+      });
+      setMetadataErrors((current) => {
+        const nextState = { ...current };
+        delete nextState[image.pathname];
+        return nextState;
+      });
       setLastUpload((current) =>
         current?.pathname === image.pathname ? null : current
       );
@@ -252,6 +303,148 @@ export function AdminApp({
 
   async function copyLink(url: string) {
     await navigator.clipboard.writeText(url);
+  }
+
+  async function saveImageMetadata(
+    pathname: string,
+    patch: { hideDelete?: boolean; usageComment?: string }
+  ) {
+    const nextSavingState = {
+      hideDelete: typeof patch.hideDelete === "boolean" ? true : undefined,
+      usageComment: typeof patch.usageComment === "string" ? true : undefined
+    };
+
+    setMetadataErrors((current) => ({
+      ...current,
+      [pathname]: undefined
+    }));
+    setSavingState((current) => ({
+      ...current,
+      [pathname]: {
+        ...current[pathname],
+        ...nextSavingState
+      }
+    }));
+
+    try {
+      const response = await fetch("/api/images", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          pathname,
+          ...patch
+        })
+      });
+
+      const payload = (await response.json()) as
+        | { success?: boolean; image?: StoredImage; error?: string }
+        | { error?: string };
+
+      if (
+        !response.ok ||
+        !("image" in payload) ||
+        !payload.image ||
+        !payload.success
+      ) {
+        const errorMessage = "error" in payload ? payload.error : undefined;
+        throw new Error(errorMessage ?? "Failed to save image details.");
+      }
+
+      updateImageInState(payload.image);
+      return payload.image;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save image details.";
+      setMetadataErrors((current) => ({
+        ...current,
+        [pathname]: message
+      }));
+      throw error;
+    } finally {
+      setSavingState((current) => ({
+        ...current,
+        [pathname]: {
+          ...current[pathname],
+          hideDelete:
+            typeof patch.hideDelete === "boolean"
+              ? false
+              : current[pathname]?.hideDelete,
+          usageComment:
+            typeof patch.usageComment === "string"
+              ? false
+              : current[pathname]?.usageComment
+        }
+      }));
+    }
+  }
+
+  async function handleHideDeleteToggle(image: StoredImage, checked: boolean) {
+    const previousValue = image.hideDelete;
+
+    updateImageInState({
+      ...image,
+      hideDelete: checked
+    });
+
+    try {
+      await saveImageMetadata(image.pathname, {
+        hideDelete: checked
+      });
+    } catch {
+      updateImageInState({
+        ...image,
+        hideDelete: previousValue
+      });
+    }
+  }
+
+  function handleUsageCommentChange(pathname: string, value: string) {
+    setCommentDrafts((current) => ({
+      ...current,
+      [pathname]: value
+    }));
+    setMetadataErrors((current) => ({
+      ...current,
+      [pathname]: undefined
+    }));
+  }
+
+  async function handleUsageCommentBlur(image: StoredImage) {
+    const nextComment = commentDrafts[image.pathname] ?? "";
+
+    if (nextComment === image.usageComment) {
+      return;
+    }
+
+    setImages((current) =>
+      current.map((item) =>
+        item.pathname === image.pathname
+          ? {
+              ...item,
+              usageComment: nextComment
+            }
+          : item
+      )
+    );
+
+    try {
+      await saveImageMetadata(image.pathname, {
+        usageComment: nextComment
+      });
+    } catch {
+      setImages((current) =>
+        current.map((item) =>
+          item.pathname === image.pathname
+            ? {
+                ...item,
+                usageComment: image.usageComment
+              }
+            : item
+        )
+      );
+    }
   }
 
   if (!isConfigured) {
@@ -411,6 +604,39 @@ export function AdminApp({
                     Uploaded: {formatDate(image.uploadedAt)} | Size:{" "}
                     {formatFileSize(image.size)}
                   </p>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={image.hideDelete}
+                      disabled={Boolean(savingState[image.pathname]?.hideDelete)}
+                      onChange={(event) =>
+                        handleHideDeleteToggle(image, event.target.checked)
+                      }
+                    />
+                    <span>Hide delete button</span>
+                  </label>
+                  <label className="comment-field">
+                    <span>Project comment</span>
+                    <textarea
+                      rows={3}
+                      value={commentDrafts[image.pathname] ?? ""}
+                      disabled={Boolean(savingState[image.pathname]?.usageComment)}
+                      placeholder="Example: Used in client landing page redesign"
+                      onChange={(event) =>
+                        handleUsageCommentChange(image.pathname, event.target.value)
+                      }
+                      onBlur={() => handleUsageCommentBlur(image)}
+                    />
+                  </label>
+                  {savingState[image.pathname]?.hideDelete ||
+                  savingState[image.pathname]?.usageComment ? (
+                    <p className="meta status-note">Saving changes...</p>
+                  ) : null}
+                  {metadataErrors[image.pathname] ? (
+                    <p className="message error inline-message">
+                      {metadataErrors[image.pathname]}
+                    </p>
+                  ) : null}
                   <div className="gallery-actions">
                     <button
                       className="secondary-button"
@@ -419,14 +645,18 @@ export function AdminApp({
                     >
                       Copy link
                     </button>
-                    <button
-                      className="danger-button"
-                      type="button"
-                      disabled={deletingPathname === image.pathname}
-                      onClick={() => handleDelete(image)}
-                    >
-                      {deletingPathname === image.pathname ? "Deleting..." : "Delete"}
-                    </button>
+                    {image.hideDelete ? null : (
+                      <button
+                        className="danger-button"
+                        type="button"
+                        disabled={deletingPathname === image.pathname}
+                        onClick={() => handleDelete(image)}
+                      >
+                        {deletingPathname === image.pathname
+                          ? "Deleting..."
+                          : "Delete"}
+                      </button>
+                    )}
                   </div>
                 </div>
               </article>

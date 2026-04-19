@@ -60,7 +60,9 @@ export async function POST(request: Request) {
       url: blob.url,
       pathname: blob.pathname,
       size: file.size,
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
+      hideDelete: false,
+      usageComment: ""
     });
   } catch (error) {
     const message =
