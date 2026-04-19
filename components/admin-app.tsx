@@ -200,8 +200,8 @@ export function AdminApp({
     }
   }
 
-  async function copyLink(downloadUrl: string) {
-    await navigator.clipboard.writeText(downloadUrl);
+  async function copyLink(url: string) {
+    await navigator.clipboard.writeText(url);
   }
 
   if (!isConfigured) {
@@ -288,13 +288,13 @@ export function AdminApp({
             <div className="result-row">
               <input
                 readOnly
-                value={lastUpload.downloadUrl}
+                value={lastUpload.url}
                 aria-label="Direct image URL"
               />
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => copyLink(lastUpload.downloadUrl)}
+                onClick={() => copyLink(lastUpload.url)}
               >
                 Copy link
               </button>
@@ -353,7 +353,7 @@ export function AdminApp({
                     <button
                       className="secondary-button"
                       type="button"
-                      onClick={() => copyLink(image.downloadUrl)}
+                      onClick={() => copyLink(image.url)}
                     >
                       Copy link
                     </button>
