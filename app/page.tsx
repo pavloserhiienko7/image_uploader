@@ -2,6 +2,8 @@ import { AdminApp } from "@/components/admin-app";
 import { getSession, isAuthConfigured } from "@/lib/auth";
 import { listImages } from "@/lib/blob";
 
+export const dynamic = "force-dynamic";
+
 export default async function HomePage() {
   const isConfigured = isAuthConfigured();
   const session = isConfigured ? await getSession() : null;

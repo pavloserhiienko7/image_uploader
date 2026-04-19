@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { StoredImage } from "@/lib/blob";
 
@@ -41,6 +41,7 @@ export function AdminApp({
   const [authError, setAuthError] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [deletingPathname, setDeletingPathname] = useState<string | null>(null);
 
@@ -51,6 +52,41 @@ export function AdminApp({
 
     return `${images.length} stored images`;
   }, [images.length]);
+
+  useEffect(() => {
+    async function loadImages() {
+      if (!isAuthenticated) {
+        return;
+      }
+
+      setGalleryLoading(true);
+
+      try {
+        const response = await fetch("/api/images", {
+          method: "GET",
+          cache: "no-store"
+        });
+
+        const payload = (await response.json()) as StoredImage[] | { error?: string };
+
+        if (!response.ok || !Array.isArray(payload)) {
+          const errorMessage =
+            !Array.isArray(payload) && "error" in payload ? payload.error : undefined;
+          throw new Error(errorMessage ?? "Failed to load images.");
+        }
+
+        setImages(payload);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to load images.";
+        setPanelError(message);
+      } finally {
+        setGalleryLoading(false);
+      }
+    }
+
+    void loadImages();
+  }, [isAuthenticated]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -290,7 +326,9 @@ export function AdminApp({
 
         {images.length === 0 ? (
           <p className="empty-state">
-            No images uploaded yet. Add the first image and it will appear here.
+            {galleryLoading
+              ? "Loading your image library..."
+              : "No images uploaded yet. Add the first image and it will appear here."}
           </p>
         ) : (
           <div className="gallery-grid">
@@ -337,4 +375,3 @@ export function AdminApp({
     </section>
   );
 }
-
