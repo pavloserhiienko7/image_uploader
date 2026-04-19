@@ -1,5 +1,6 @@
 import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
+import { getSession } from "@/lib/auth";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const allowedTypes = new Set([
@@ -22,6 +23,12 @@ function sanitizeFilename(filename: string) {
 
 export async function POST(request: Request) {
   try {
+    const session = await getSession();
+
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+    }
+
     const formData = await request.formData();
     const file = formData.get("image");
 
@@ -50,8 +57,10 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       downloadUrl: blob.url,
+      url: blob.url,
       pathname: blob.pathname,
-      size: file.size
+      size: file.size,
+      uploadedAt: new Date().toISOString()
     });
   } catch (error) {
     const message =

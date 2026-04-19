@@ -1,18 +1,27 @@
-import { UploaderCard } from "@/components/uploader-card";
+import { AdminApp } from "@/components/admin-app";
+import { getSession, isAuthConfigured } from "@/lib/auth";
+import { listImages } from "@/lib/blob";
 
-export default function HomePage() {
+export default async function HomePage() {
+  const isConfigured = isAuthConfigured();
+  const session = isConfigured ? await getSession() : null;
+  const images = session ? await listImages() : [];
+
   return (
     <main className="page-shell">
       <section className="hero">
-        <p className="eyebrow">Vercel Blob powered</p>
-        <h1>Upload an image. Copy the direct link. Use it anywhere.</h1>
+        <p className="eyebrow">Protected Vercel Blob manager</p>
+        <h1>Upload images, copy direct links, and manage your library.</h1>
         <p className="hero-copy">
-          A small personal image host built for quick sharing in websites, inboxes,
-          docs, and chats.
+          This panel is protected with a single admin login. Your direct image
+          links stay public, while upload and delete actions stay private.
         </p>
       </section>
-      <UploaderCard />
+      <AdminApp
+        images={images}
+        isAuthenticated={Boolean(session)}
+        isConfigured={isConfigured}
+      />
     </main>
   );
 }
-
